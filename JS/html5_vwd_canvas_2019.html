@@ -1,0 +1,1730 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<title>Ex5 - ???? </title>
+		<style>
+		html{
+			font-family: "Comic Sans MS";
+		}
+		body{
+			background:cyan;
+		}
+		</style>
+		<script>
+			/*
+			VWD - exercises
+			Landscaping Simulation --- ARCHIVED
+			TODO:
+				Add different kinds of tree (2 or 3)
+				Add burning effect for laser
+				Refactor and clean up code
+			
+			Changelog:
+			Ex5 - Additional Features: 
+				Added sliders for fine tuning movement in smaller increments
+				Added way to control ship movement by clicking objects on controller canvas
+				Added control panel for ship (movement) on another canvas
+				Removed all camera related things
+			
+			Ex4 - Additional Features:
+				Hit Detection with color values for objects using second canvas 
+				Additional canvas (hidden) which uses only objects on screen for hit detection
+				Many changes to codebase, additional class(es) and variables, modified classes, functions etc to support hit detection
+
+			Ex3 - Additional Features:
+				Camera and way to capture it added - was too laggy and made the playcanvas unplayable, DISABLED --- found issue but couldn't fix it YET (WIP)
+				Did some changes to lecture code, plan was to make an app capable of detecting 2 different pointers - one for movement, other one for aiming.. coming soon
+				Keyboard support for changing direction and moving the ship
+				Lasers will shoot on canvas when clicked
+				Ship starts with constant velocity to random direction
+				
+			Ex2 - Additional Features: 
+				Trees can be chopped down by clicking on (near) them
+				Rocks and Stumps can be exploded into oblivion (by clicks)
+				Explosion particles gain initial speed scaled by Y-coordinate
+				Exploding particles fall on the ground level where object was located
+				Not drawing all objects, only those visible on canvas (+some buffer) --> less lag with numerous objects
+				Trees look a bit different now
+				Added way to toggle logging (toggleLogging)
+				Everything in scenery still moves at constant speed (that can be modified)
+			
+			Ex1 - Features: 
+				Randomly/Dynamically spawning trees and stones on moving scene
+				Tree falling animation
+				Fading animation for fallen trees
+				Ordering for objects such that ones closer hide other ones
+				Scaling of object based on y-coordinate
+				Technically 3 different shapes for spruce: normal, falling tree, and stump remainder for fallen one
+				Modular coding and easy way to add more objects (extend class CanvasObject)
+			 
+			(c) kaitai 2019
+			
+			ps.	I recommend everyone to split their program in separate files, 
+				keeping everything in one file makes development tedious and so sloooow.
+			*/
+			
+			const BACKGROUND = "#A04000"
+			const CANVAS_SIZE = [400,400];
+			const DRAWING_BUFFER = 30;
+			const MIN_OBJECT_AMOUNT = 10; // per type
+			const MAX_OBJECT_AMOUNT = 500;
+			const OBJECT_DENSITY = Math.min(Math.max(CANVAS_SIZE[0]*CANVAS_SIZE[1]/6,MIN_OBJECT_AMOUNT),MAX_OBJECT_AMOUNT);
+			const MAX_INTERACT_DISTANCE=25;
+		
+			const TREES=["spruce","spruce",] //for now 2x spruce, remove other one after adding different trees
+			
+			var G = [0,0.008]; //gravity
+			
+			const DEFAULT_LOGGER = console.log;
+			const DISABLED_LOGGER = function() {};
+			var CURRENT_LOGGER = DEFAULT_LOGGER;
+			
+			var SHIP_LOCATION = [0, 0];
+			var SHIP_SPEED = [1, 0.5];
+			var SHIP_MAX_VELOCITY = 4.2;
+			var SHIP_MIN_VELOCITY = 0.2;
+			var SHIP_DIRECTION = Math.random()*2*Math.PI;
+			//go random direction at constant speed
+			SHIP_SPEED[0] = Math.cos(SHIP_DIRECTION)*SHIP_MAX_VELOCITY*0.3;
+			SHIP_SPEED[1] = Math.sin(SHIP_DIRECTION)*SHIP_MAX_VELOCITY*0.3;
+			
+			SPAWN_AREA_BUFFER = 2.5; //how far objects are spawned/saved related to canvas size
+			AIM_HELP_LEVEL = 3 //int, bigger value makes objects easier to hit
+			OBJECT_COLOR_ID_RAW = 1
+			OBJECT_COLOR_ID = "rgb("+0+","+0+","+1+")";
+			COLOR_ID_CHANGE = Math.floor(255*255*255 / (OBJECT_DENSITY*9)); 
+			//for debugging, make more more distinquish from each other
+			//otherwise 1 is enough. 9 just to have more room for extra objects (used in dict as a key)
+			
+			function updateCOLOR_ID(){
+				OBJECT_COLOR_ID_RAW += COLOR_ID_CHANGE;
+				var blue = OBJECT_COLOR_ID_RAW % 255;
+				var green = (OBJECT_COLOR_ID_RAW-blue) % (255*255) / 255; //math floor would do the same (see below)
+				var red = Math.floor(OBJECT_COLOR_ID_RAW / (255*255)); // -green*255-blue would do the same (see above)
+
+				OBJECT_COLOR_ID = "rgb("+red+","+green+","+blue+")";
+			}
+
+			var applicationState = 0;
+			/* applicationStates: - WORK IN PROGRESS
+			0 - initializing
+			1 - configuring the camera
+			2 - playing with camera configured
+			3 - playing with no camera
+			4 - ??
+			*/
+			
+			
+			var SHIP = null;
+			function main(){
+				SHIP = new SpaceShip();
+
+				var scanvas = initScenery("scenery", CANVAS_SIZE[0], CANVAS_SIZE[1]);
+				var hdCanvas = initCanvas("sceneryHitDetection", CANVAS_SIZE[0], CANVAS_SIZE[1]);
+				var eventCanvas = new HitDetectingCanvas(scanvas,hdCanvas);
+				
+				var ctrlCanvas = initCanvas("controller", CANVAS_SIZE[0], CANVAS_SIZE[1]);
+				var ctrlHdCanvas = initCanvas("controllerHitDetection", CANVAS_SIZE[0], CANVAS_SIZE[1]);
+				var ctrlPanelCanvas = new ControlPanelCanvas(ctrlCanvas, ctrlHdCanvas);
+
+				document.addEventListener('keydown', controlMovementWithKeys);
+
+				//disabling logger
+				toggleLogging()
+				
+				animateObjects(eventCanvas);
+				animateControls(ctrlPanelCanvas);
+				eventCanvas.addListeners();
+				ctrlPanelCanvas.addListeners();
+			}
+			
+			//////////////////////////////////// MOST MODIFICATIONS / ADDITIONAL CODE APPEAR HERE SINCE LAST ITERATION - WILL BE MOVED AWAY (CORRECT LOCATION FOR THE NEXT ONE)
+			
+			class SpaceShip{
+				constructor(location=SHIP_LOCATION, speed=SHIP_SPEED, maxVelocity=SHIP_MAX_VELOCITY, minVelocity=SHIP_MIN_VELOCITY, 
+							maxAcceleration = 0.1, maxBrakingForce = 0.15, maxSteeringForce = 0.15){
+					this.location = location;
+					this.speed = speed;
+					this.maxVelocity = maxVelocity;
+					this.minVelocity = minVelocity;
+					this.maxAcceleration = maxAcceleration;
+					this.maxBraking = maxBrakingForce;
+					this.maxSteering = maxSteeringForce;
+				}
+				
+				updateSpeed(addition){
+					var oldSpeed = this.speed;
+					this.speed = addVectors(this.speed, addition);
+					//this.speed = normalizeVector(this.speed, getMagnitude(oldSpeed)); //limits velocity to constant speed
+					//limit ship velocity
+					if (getMagnitude(this.speed)>this.maxVelocity){
+						this.speed = normalizeVector(this.speed, this.maxVelocity);
+						//console.log("Limit maximum speed");
+					} else if(getMagnitude(this.speed)<this.minVelocity){
+						this.speed = normalizeVector(oldSpeed, this.minVelocity);
+						//console.log("Retain minimum speed");
+					}
+					
+					
+				}
+				
+				controlMovementWithKeyCode(keyCode){
+					var vector = [0,0]
+					
+					switch(String.fromCharCode(keyCode))
+					{
+						case 'W':
+							vector = normalizeVector(this.speed, this.maxAcceleration);
+							if (getMagnitude(vector) < this.maxAcceleration/50){ // if stationary, start moving (towards right)
+								vector = [0.1,0];
+							}
+							break;
+						case 'A':
+							vector = perpVector(this.speed,false);
+							vector = normalizeVector(vector, this.maxSteering);
+							break;
+						case 'D':
+							vector = perpVector(this.speed,true);
+							vector = normalizeVector(vector, this.maxSteering);
+							break;
+						
+						case 'S':
+							vector = scaleVector(this.speed, 0.2);
+							vector = normalizeVector(this.speed, -Math.min(this.maxBraking, getMagnitude(this.speed)));
+							break;
+					}
+					
+					this.updateSpeed(vector);
+					//console.log(this.speed);
+					
+				}
+				
+			}
+			
+			class ControlVariable{
+				constructor(min, max, steps=2){
+					this.min = min;
+					this.max = max;
+					
+					if (steps<2){
+						steps=2;
+					}
+					this.steps = steps;
+					
+					this.values = null;
+					this.setValues();
+					
+					this.index = this.values.length-1;
+				}
+				
+				//create an array with equally spaced values between min and max
+				setValues(){
+					var step = (this.max-this.min)/(this.steps);
+					var values = [];
+					for (var i = this.min; i<this.max;i+=step){
+						values.push(i);
+					}
+					
+					//make sure min and max values are exact values
+					var last_index = values.length-1;
+					values[0] = this.min;
+					values[last_index] = this.max;
+					
+					this.values = values;
+					return values;
+				}
+				
+				setIndex(index){
+					if(index<0){
+						index=0;
+					} else if(index>=this.values.length){
+						index = this.values.length-1;
+					}
+					this.index = index;
+					return index;
+				}
+				
+				up(){
+					if (this.index<(this.values.length-1)){
+						this.index += 1;
+					}
+					return this.index;
+				}
+				down(){
+					if (this.index>(0)){
+						this.index -= 1;		
+					}
+					return this.index;			
+				}
+				
+				set(index){
+					return this.setIndex(index);
+				}
+				get(){
+					return this.index;
+				}
+				
+				getValue(){
+					return this.values[this.index];
+				}
+			
+			}
+			
+			//idea from https://stackoverflow.com/questions/13070054/convert-rgb-strings-to-hex-in-javascript
+			function rgbToArray(rgbString){
+				var newString = rgbString.split("(")[1].split(")")[0];
+				return newString.split(","); //returns array with [r,g,b] values
+			}
+			
+			function arrayToRGB(rgbArray){
+				var newString = "rgb("+rgbArray[0]+","+rgbArray[1]+","+rgbArray[2]+")";
+				return newString;
+			}
+			
+			function rawToRGB(rawColor){
+				var blue = rawColor % 256;
+				var green = (rawColor-blue) % (256*256) / 256; //math floor would do the same (see below)
+				var red = Math.floor(rawColor / (256*256)); // -green*256-blue would do the same (see above)
+
+				return "rgb("+red+","+green+","+blue+")";
+			}
+			
+			function rgbToRaw(rgbString){
+				var newArr = rgbToArray(rgbString);
+				return (newArr[0]*256*256+newArr[1]*256+newArr[2])
+			}
+			
+			class ColorRGB{
+				constructor(rawColor){
+					this.raw = 0;
+					this.rgb = "rgb("+0+","+0+","+0+")";
+					this.set(rawColor);
+				}
+				
+				toRGB(color=this.raw){
+					return rawToRGB(this.raw);
+				}
+				
+				add(amount=1, color=this.raw){
+					return (color+amount);
+				}
+				
+				set(color){
+					this.raw=color;
+					this.rgb=this.toRGB(color);
+				}
+				
+				get(){
+					return this.rgb();
+				}
+			
+			}
+			
+			function createArrayOfColors(length, baseColor, colorChange=1){
+				var colors=[];
+				for (var i = 0; i<length; i++){
+					colors.push(new ColorRGB(baseColor.raw+i*colorChange)); // add new id color based on original raw idColor
+				}
+				return colors;
+			}
+			
+			function createArrayOfRGBs(length, baseColor, colorChange=1){
+				var colors=[];
+				for (var i = 0; i<length; i++){
+					colors.push(rawToRGB(baseColor.raw+i*colorChange)); // add new id color based on original raw idColor
+				}
+				return colors;
+			}
+			
+			class ColoredCtrlVar extends ControlVariable{
+				constructor(location, realColor, idColorStart, min, max, target="", steps=2, colorChange = 256*30){
+					super(min, max, steps);
+					
+					this.location = location;
+					this.idColor = new ColorRGB(idColorStart);
+					this.idColors = [];
+					this.setIdColors();
+					
+					this.color = new ColorRGB(realColor);
+					this.change = colorChange;
+					this.colors = [];
+					this.setColors();
+					
+					this.target = target;
+					
+				}
+				
+				press(){
+					var old = this.index;
+					this.setIndex(this.index+1);
+					if (this.index == old){
+						this.setIndex(0);
+					}
+					var newValue = this.values[this.index];
+					switch(this.target){
+						case 'accelerate':
+							SHIP.maxAcceleration = newValue;
+							break;
+						case 'deccelerate':
+							SHIP.maxBraking = newValue;
+							break;
+						case 'steer':
+							SHIP.maxSteering = newValue;
+							break;
+					}
+				}
+				
+				setIdColors(){
+					var idColors = createArrayOfColors(this.values.length, this.idColor, 1); //for computer, difference of 1 is enough to detect color difference
+					this.idColors = idColors;
+				}
+				
+				setColors(change=this.change){
+					var colors = createArrayOfColors(this.values.length, this.color, change);
+					this.colors = colors;
+				}
+				
+				key(){
+					return this.idColor.rgb;
+				}
+				
+				keys(){
+					return createArrayOfRGBs(this.values.length, this.idColor, this.change);
+				}
+				
+				draw(canvas, hitDetectionCanvas=null){
+					
+					
+					var offsets = 11;
+					var center = this.location;
+					
+					for (var i=0;i<this.values.length;i++){
+						var center = addVectors(this.location, [i*(offsets+offsets*0.5-1),0]);
+						//(canvas, location, radius=40, sides=40, rotation=0)
+						var ctx = pathRegularPolygon(canvas, center, offsets, 4, Math.PI/4);
+						
+						var oldFill = ctx.fillStyle;
+						ctx.fillStyle = this.colors[i].rgb;
+						ctx.fill();
+						
+						if (this.index == i){
+							ctx = pathRegularPolygon(canvas, center, offsets/3);
+							ctx.fillStyle = 'grey';
+							ctx.fill()
+						}
+						ctx.fillStyle = oldFill;
+						
+						if (hitDetectionCanvas){
+							var ctx = pathRegularPolygon(hitDetectionCanvas, center, offsets, 4, Math.PI/4);
+							
+							var oldFill = ctx.fillStyle;
+							ctx.fillStyle = this.idColors[0].rgb; //for now, use same (key) color for all parts
+							ctx.fill();
+							ctx.fillStyle = oldFill;
+						}
+					}
+				}
+			}
+			
+			class controlButton{
+				constructor(location, color, idColor, behaviour){
+					this.location = location;
+					this.color = new ColorRGB(color);
+					this.idColor = new ColorRGB(idColor);
+					this.behaviour = behaviour;
+					this.isPressed = false;
+				}
+				key(){
+					return this.idColor.rgb;
+				}
+				press(){
+					this.isPressed = this.isPressed?false:true; //toggle this.isPressed -- feedback to the user
+					var keyCode = mapValueToKeyCode(this.behaviour);
+					SHIP.controlMovementWithKeyCode(keyCode);
+				}
+				
+				release(){
+					this.isPressed = false;
+				}
+				
+				draw(canvas, hitDetectionCanvas=null){
+					var ctx = pathRegularPolygon(canvas, this.location);
+					var origColor = ctx.fillStyle;
+					var origAlpha = ctx.globalAlpha
+					ctx.fillStyle = this.color.rgb;
+					if (this.isPressed){
+						ctx.globalAlpha = 0.8;
+					}
+					ctx.fill();
+					if (this.isPressed){
+						ctx.globalAlpha = origAlpha;
+					}
+					ctx.fillStyle = origColor;
+					
+					if (hitDetectionCanvas){
+							var ctx = pathRegularPolygon(hitDetectionCanvas, this.location);
+							
+							var oldFill = ctx.fillStyle;
+							ctx.fillStyle = this.idColor.rgb; //for now, use same (key) color for all parts
+							ctx.fill();
+							ctx.fillStyle = oldFill;
+						}
+				}
+				
+				
+			}
+			
+			function animateControls(canvasContainer){
+				var canvas = canvasContainer.canvas;
+				var hdCanvas = canvasContainer.detectorCanvas;
+				
+				//create objects
+				//speed changes
+				var params = [[200,60], 256*256*256, 128*256*256, 'accelerate']; //red, dark red
+				canvasContainer.addOfType(controlButton, params);
+				params = [[60,200], 255*256*256+255*256, 255*256*256+255*256+255, 'steerLeft'];//yellow, white
+				canvasContainer.addOfType(controlButton, params);
+				params = [[340,200], 255*256*256+255*256, 128*256*256+128*256+128, 'steerRight']; //yellow, grey
+				canvasContainer.addOfType(controlButton, params);
+				params = [[200,340], 255, 128, 'deccelerate']; //blue, dark blue
+				canvasContainer.addOfType(controlButton, params);
+				
+				//fine tuning
+				params = [[200-32,120],200*256*256,100*256*256,SHIP.maxAcceleration/10,SHIP.maxAcceleration,'accelerate',5];
+				canvasContainer.addOfType(ColoredCtrlVar, params);
+				params = [[200-32,200],100*256,40*256,SHIP.maxSteering/10,SHIP.maxSteering,'steer',5, 256*20];
+				canvasContainer.addOfType(ColoredCtrlVar, params);
+				params = [[200-32,280],200,60,SHIP.maxBraking/10,SHIP.maxBraking,'deccelerate',5];
+				canvasContainer.addOfType(ColoredCtrlVar, params);
+				canvasContainer.updateKeys();
+				
+				setInterval(function(){
+					clearCanvas(canvas);
+					clearCanvas(hdCanvas);
+					var objs = canvasContainer.objects;
+
+					//animation
+					for (var i=0;i<objs.length;i++){
+						objs[i].draw(canvas, hdCanvas);
+					}
+				}, 10);
+			}
+			
+			
+			//////////////////////////////////// CLASSES
+			class AnimatingCanvas{
+				
+				constructor(canvas, spawnAreaBuffer=SPAWN_AREA_BUFFER){
+					this.canvas = canvas
+					this.spawnAreaBuffer = spawnAreaBuffer
+					this.objects = [] //objects to draw on canvas
+					
+					//have one canvas length as extra here to avoid constant resetting of objects if user keeps moving back and forth
+					this.minXcoord = -this.canvas.width*(this.spawnAreaBuffer);
+					this.minYcoord = -this.canvas.height*(this.spawnAreaBuffer);
+					this.maxXcoord = this.canvas.width*(this.spawnAreaBuffer+1);
+					this.maxYcoord = this.canvas.height*(this.spawnAreaBuffer+1);
+				}
+				
+				clearCanvas(){
+					clearCanvas(this.canvas);					
+				}
+				
+				addOfType(classType, numberOfObjects){
+					var canvas = this.canvas
+					for (var i=0;i<numberOfObjects;i++){
+						var location = getLocationCanvasRelated(this.canvas, this.spawnAreaBuffer, false);
+						//console.log(classType);
+						switch (classType.name)
+						{
+							case 'ExplosiveStone':
+							case 'ExplosiveTree':
+								var obj = new classType(location, OBJECT_COLOR_ID);
+								break;
+							
+							default:
+								var obj = new classType(location);
+								break;
+						}
+						//var obj = new classType(location);
+						this.objects.push(obj);
+						updateCOLOR_ID();
+					}
+					//console.log(this.objects.length);
+					//console.log(OBJECT_COLOR_ID);
+				}
+				
+				applyMovement(obj){ // NOTE: remember to apply speed for non-stationary objects of the scenery in different method (TO BE ADDED)
+					
+					var xCoord = obj.location[0]
+					if (obj.inRect(this.minXcoord, this.minYcoord, this.maxXcoord, this.maxYcoord)) {
+					//if (xCoord > Math.min(-20,-this.canvas.width*this.spawnAreaBuffer/2)) {
+						obj.updateLocation(SHIP.speed);
+						//obj.location[0] = xCoord - 1
+					} else {
+						//remake object outside canvas at random location
+						obj.reset(this.canvas, this.spawnAreaBuffer);
+					}
+				}
+			}
+			
+			class EventCanvas extends AnimatingCanvas{
+				constructor(canvas){
+					super(canvas)
+					this.fgObjects = [];
+					//var self = this;
+				}
+				
+				mouseDownFunction(e){
+					//explode objects
+
+					//console.log("what is this?");
+					//console.log(this);
+					var objs = this.objects;
+					var canvas = this.canvas;
+					var fgObjs = this.fgObjects;
+					var location = getCursorPosition(e);
+					var explosiveObjs = getOfType(objs, ExplosiveTree)
+					explosiveObjs.push(...getOfType(objs, ExplosiveStone)) // add another array to array NOTE: consider for loop and more efficient checking for multiple types
+					var objIndex = getNearest(location, explosiveObjs, MAX_INTERACT_DISTANCE);
+					if (objIndex == -1){
+						console.log("No suitable objects nearby.");
+					} else{
+						explosiveObjs[objIndex].explode(canvas);
+						location = explosiveObjs[objIndex].location;
+					}
+					var beam = new Beam(location); //addLaserBeam(location);	
+					fgObjs.push(beam);
+				}
+				
+				addListeners(){
+					// check https://stackoverflow.com/questions/20279484/how-to-access-the-correct-this-inside-a-callback for this function() -trick.. it "magically" works
+					// also https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/Arrow_functions
+					this.canvas.addEventListener('mousedown',(e) => this.mouseDownFunction(e));
+				}
+
+			}
+			
+			class HitDetectingCanvas extends EventCanvas{
+				constructor(canvasA, canvasB){
+					super(canvasA);
+					this.detectorCanvas = canvasB;
+					this.keys = {}; //unique key for each object used in hit detection
+					this.updateKeys();
+					this.objectsOnScreen = []; // to limit drawing
+				}
+				
+				//assuming no objects get deleted runtime
+				updateKeys(){
+					var newKeys = {};
+					for (var i=0; i<this.objects.length;i++){
+						//filter out objects which have no key()
+						if (this.objects[i].key){
+							newKeys[this.objects[i].key()] = this.objects[i];
+						}
+					}
+				
+					this.keys = newKeys;
+					return newKeys;
+					
+				}
+				
+				setObjectsOnScreen(objects){
+					this.objectsOnScreen = objects;
+				}
+				
+				getObjectWithColorAtLocation(location){
+					var color=getColorAtLocation(this.detectorCanvas, location);
+					//console.log(color);
+					var obj = null;
+					if (this.keys[color]){
+						obj = this.keys[color]
+					} else{
+						console.log("Color not found!");
+					}
+					return obj;
+				}
+					
+				mouseDownFunction(e){
+				//get position, get color related to position --> update/interact with object if any at location
+
+					var location = getCursorPosition(e);
+					
+					var obj = this.getObjectWithColorAtLocation(location);
+					//console.log(obj);
+					if (obj){
+						obj.explode(this.canvas);
+					} else{
+						console.log("There is no object there.");	
+					}
+					var beam = new Beam(location); //addLaserBeam(location);	
+					this.fgObjects.push(beam);
+				}
+				
+				clearCanvas(){
+					super.clearCanvas();
+					clearCanvas(this.detectorCanvas);
+				}
+			}
+			
+			//NEW
+			class ControlPanelCanvas extends HitDetectingCanvas{
+				
+				addOfType(classType, initParams){
+					this.objects.push(new classType(...initParams));
+				}
+				
+				mouseDownFunction(e){
+				//get position, get color related to position --> update/interact with object if any at location
+
+					var location = getCursorPosition(e);
+					
+					var obj = this.getObjectWithColorAtLocation(location);
+					//console.log(obj);
+					if (obj){
+						obj.press(this.canvas);
+					} else{
+						console.log("There is no object there.");	
+					}
+					var beam = new Beam(location); //addLaserBeam(location);	
+					this.fgObjects.push(beam);
+				}
+			}
+				
+			class CanvasObject{
+				constructor(location){
+					this.location=location;
+				}
+				
+				draw(canvas){
+					drawRegularPolygon(canvas,this.location);
+				}
+
+				update(){
+					//update object
+				}
+				
+				updateLocation(globalChange){
+				this.location = subtractVectors(this.location, globalChange);
+				}
+				
+				reset(canvas, buffer){
+					//remake object outside canvas at random location
+					this.resetOffCanvas(canvas, buffer);
+				}
+				
+				resetOffCanvas(canvas, buffer){
+				var location = getLocationCanvasRelated(canvas, buffer);
+					this.location[0] = location[0];
+					this.location[1] = location[1];
+				}
+			
+				//added recently
+				inRect(x0, y0, x1, y1, buffer=0){
+					return inBoundingbox(this.location, x0, y0, x1, y1);
+				}
+				
+			}
+			
+			class CanvasHitObject extends CanvasObject{
+				constructor(location, idColor){
+					super(location);
+					this.idColor = idColor;
+					this.available = true;
+				}
+				
+				key(){
+					return this.idColor;
+				}
+				
+				drawWithIdColor(canvas){
+					//draw something on canvas with idColor for hit check
+				}
+				
+				interact(){
+					this.available?false:true; //toggle this.available
+					return this.available;
+				}
+			}
+			
+			class CanvasPointObject extends CanvasObject{
+				
+				draw(canvas){
+					var ctx = canvas.getContext("2d");
+					ctx.fillStyle="black";
+					ctx.fillRect(this.location[0], this.location[1], 1, 1);
+					ctx.fillStyle = BACKGROUND;
+				}
+			}
+			
+			class MovingPointObject extends CanvasPointObject{
+				constructor(location, speed){
+					super(location)
+					this.oldLocation = subtractVectors(location, speed)
+				}
+				
+				//based on lecture demo (this is quite different tho)
+				//NOTE: apply global changes (moving scenery) in every velocity calculation to remove it's effect (subtractVectors) and remember to apply in actual newLocation
+				//NOTE2: I'm not sure how it really works but it does do the thing after some trial and error :)
+				//NOTE3: Only tested with 0 velocity so far
+				updateLocation(globalChange){
+					var velocity = subtractVectors(this.location, this.oldLocation);
+					var velocity = subtractVectors(velocity, globalChange);
+					var newLocation = addVectors(this.location,velocity);
+								
+					var newLocation = addVectors(newLocation,globalChange);
+
+					this.oldLocation=subtractVectors(this.location, globalChange);
+					this.location=subtractVectors(newLocation, globalChange);
+					
+				}
+				
+				
+				
+				reset(canvas, buffer){
+					var velocity=subtractVectors(this.location,this.oldLocation)
+					super.reset(canvas, buffer);
+					
+					this.oldLocation = subtractVectors(this.location, velocity);
+				}
+			}
+			
+			class ColorSpark extends MovingPointObject{
+				constructor(location, speed=[0,0], color="rgb(200,10,10)", timeOut = 300){
+					super(location, speed)
+					this.color = color
+					this.baseColor = color
+					this.timeOut = timeOut //timeout until particle disappears/is different color... (ticks)
+					this.timerStart = timeOut
+				}
+				
+				draw(canvas){
+					drawPoint(canvas, this.location, this.color)
+				}
+				
+				reset(canvas, buffer){
+					super.reset(canvas, buffer, location);
+					this.color = this.baseColor;
+					this.timeOut = this.timerStart;
+				}
+
+				
+			}
+		
+			class ExplosionParticle extends ColorSpark{
+				constructor(location, speed=[0,0], color="rgb(200,10,10)", timeOut = 20){
+					super(location, speed, color, timeOut)
+					this.ground = location[1]; //ground level for fire spark
+				}
+				
+				updateLocation(globalChange){
+					//add gravity to location changes
+					super.updateLocation(globalChange);
+					//super.updateLocation(addVectors(globalChange,G))
+					this.location=addVectors(this.location,G);
+					
+					this.ground=this.ground-globalChange[1];
+					this.applyConstraints();
+				}
+				
+				update(){
+					this.timeOut = (this.timeOut-0.1)>0?(this.timeOut-0.1):0; 
+					this.color = RGB_Linear_Shade(-(this.timerStart-this.timeOut)/this.timerStart, this.baseColor) //turn fire sparks into ash (black) - negativity for black, positive for white
+				}
+				
+				applyConstraints(){
+					
+					//apply constraints (dont fall below ground level)
+					//this.ground = parent.location[1];
+					if (this.location[1] > this.ground){
+						this.location[1] = this.ground;
+						
+						//make sparks slower when on the ground(level)
+						var xMovement = this.oldLocation[0] - this.location[0]
+						this.oldLocation[0] -= xMovement/5
+					}
+				}
+				
+			}
+			
+			//not used for now, maybe in future for collisions
+			class CollidingLineObject extends CanvasObject{
+				constructor(start, end, thickness=1){
+					super(averageVectors(start, end))
+					this.start = start
+					this.end = end
+					this.thickness = thickness
+					this.lineVector = subtractVectors(end, start)
+					this.angle = angleVector(lineVector)
+				}
+				collisionArea(){
+					var lineVector = subtractVectors(this.end, this.start)
+					var occupiedLine = addVectors(this.start, lineVector)
+					
+				}
+			}
+			
+			class Stone extends CanvasHitObject{
+				constructor(location, color){
+					super(location, color)
+				}
+				
+				draw(canvas){
+					drawStone(canvas, this.location);
+				}
+			}
+			
+			//NOTE: Explosive classes are nearly the same - maybe this recurrency can be removed some way
+			class ExplosiveStone extends Stone{
+				constructor(location, color){
+					super(location, color)
+					this.exploding = false;
+					this.sparks = [];
+				}
+				
+				draw(canvas){
+					//logic for exploding start in explode()
+					if (this.exploding){
+						
+						for (var index = 0; index < this.sparks.length; ++index){
+							var spark = this.sparks[index]
+							spark.draw(canvas)
+							spark.update()
+
+						}
+					}
+					else {
+						super.draw(canvas)
+					}
+					
+				}
+				drawWithIdColor(canvas){
+					if(!this.exploding){
+						drawStone(canvas, this.location, this.idColor);
+					}
+				}
+				reset(canvas, buffer){
+					super.reset(canvas, buffer)
+					this.exploding = false;
+					this.sparks = [];
+				}
+				
+				updateLocation(globalChange){
+					super.updateLocation(globalChange)
+					for (var index = 0; index < this.sparks.length; ++index){
+							this.sparks[index].updateLocation(globalChange)
+						}
+				}
+				
+				explode(canvas){
+					if (!this.exploding){
+						this.exploding = true;
+						this.sparks = createSparkSet(canvas, this.location, "rgb(128,128,128)", 10);
+						console.log("Trying to explode a stone");
+						return true;
+					} 
+					else {
+						//console.log("Stone is already gone");
+					}
+				}
+			}
+			
+			class Tree extends CanvasHitObject{
+				constructor(location, color,type=-1){
+					super(location, color);
+					this.origType = type;
+					this.type = type<0?this.useRandomTree():TREES[type]; //draw random tree if type not (pre)defined
+				}
+				useRandomTree(){
+					return getRandomElement(TREES)
+				}
+				
+				draw(canvas){
+					drawTree(canvas, this.location, this.type);
+				}
+				reset(canvas,buffer){
+					super.reset(canvas,buffer)
+					if (this.origType<0){
+						this.type = this.useRandomTree(); //draw random tree if type was not (pre)defined
+					}
+				}
+			}
+			
+			class CuttableTree extends Tree{
+				constructor(location, color, type=1, beingCut=false,progress=0){
+					super(location, color, type);
+					this.beingCut=beingCut;
+					this.progress=progress;
+					this.timeOut=0;
+				}
+				
+				draw(canvas){
+					drawTree(canvas, this.location, this.type, this.beingCut, this.progress, this.timeOut);
+					this.updateProgress()
+				}
+				
+				drawWithIdColor(canvas){
+					drawTree(canvas, this.location, this.type, this.beingCut, this.progress, this.timeOut, this.idColor);
+				}
+				
+				reset(canvas, buffer){
+					super.reset(canvas, buffer)
+					this.beingCut=false;
+					this.progress=0;
+					this.timeOut=0;
+					
+				}
+				
+				updateProgress(){
+					if (this.beingCut){
+						this.progress = this.progress<1?this.progress+0.01:1; // progress==1 when tree has fallen
+					} else { //random very small chance for tree to fall
+						if (Math.random() < 0.000005){
+							this.beingCut=true;
+						}
+					}
+
+					//timeOut (remove tree, leave stump)
+					if (this.progress == 1){
+						this.timeOut = this.timeOut<1?this.timeOut+0.005:1;
+					}
+				}
+			}
+
+			class ExplosiveTree extends CuttableTree{
+				constructor(location, color, type=1, beingCut=false,progress=0){
+					super(location, color, type=1, beingCut=false,progress=0);
+					this.exploding = false;
+					this.sparks = [];
+				}
+				
+				draw(canvas){
+					//logic for exploding start in explode()
+					if (this.exploding){
+						
+						for (var index = 0; index < this.sparks.length; ++index){
+							var spark = this.sparks[index]
+							spark.draw(canvas)
+							spark.update()
+
+						}
+					}
+					else {
+						super.draw(canvas)
+					}
+					
+				}
+				
+				drawWithIdColor(canvas){
+					if (!this.exploding){
+						super.drawWithIdColor(canvas);
+					}
+				}
+				
+				reset(canvas, buffer){
+					super.reset(canvas, buffer)
+					this.exploding = false;
+					this.sparks = [];
+				}
+				
+				updateLocation(globalChange){
+					super.updateLocation(globalChange)
+					for (var index = 0; index < this.sparks.length; ++index){
+							this.sparks[index].updateLocation(globalChange)
+						}
+				}
+				
+				explode(canvas){
+					if (!this.beingCut){
+						this.beingCut = true;
+						console.log("Trying to cut a tree");
+						return true;
+					}
+					else if (this.timeOut<1){
+						console.log("Only stubs may be ignited for safety reasons");
+						return false; // cant explode remainder yet (needs to be stump)
+					} 
+					else if (!this.exploding){
+						this.exploding = true;
+						this.sparks = createSparkSet(canvas, this.location, "rgb(128,0,0)");
+						console.log("Trying to explode a stump");
+						return true;
+					} 
+					else {
+						//console.log("Stump is already gone");
+					}
+				}
+			}
+			
+			class Beam extends CanvasObject{
+				constructor(target, timeOut=50, source=getLocationFromShipDirection(SHIP_DIRECTION), color = "yellow"){
+					super(target);
+					
+					this.timeOut = timeOut;
+					this.timerStart = timeOut;
+					
+					this.sLocation = source; //beam source location
+					this.color = color;
+				}
+				
+				draw(canvas){
+					var ctx = pathLine(canvas, this.sLocation, this.location, this.color);
+					var fading = 1 - this.timeOut/this.timerStart;
+					var pivotAlpha = ctx.globalAlpha;
+					var pivotLineWidth = ctx.lineWidth;
+					ctx.globalAlpha = 1-fading;
+					
+					var pivotFillStyle = ctx.strokeStyle;
+					ctx.strokeStyle = this.color;
+					ctx.lineWidth = 2;
+					ctx.stroke();
+					ctx.strokeStyle = pivotFillStyle;
+					ctx.globalAlpha = pivotAlpha;
+					ctx.lineWidth = pivotLineWidth;
+				}
+				
+				update(globalChange=SHIP.speed){
+					this.updateLocation(globalChange);
+					this.timeOut = (this.timeOut-1)>=0?(this.timeOut-1):0; 
+				}
+				
+			}
+			
+			//////////////////////////////////// FUNCTIONS
+			
+			function initCanvas(ID,width,height){
+				var iCanvas = document.getElementById(ID);
+				var ctx = iCanvas.getContext("2d");
+				ctx.canvas.width=width;
+				ctx.canvas.height=height;
+				return iCanvas;
+			}
+					
+			function initScenery(ID,width,height){
+				var iScenery = initCanvas(ID,width,height);
+				var ctx = iScenery.getContext("2d");
+				ctx.fillStyle = BACKGROUND;
+				ctx.fillRect(0,0, iScenery.width, iScenery.height);
+				return iScenery			
+			}
+			
+			function animateObjects(canvasContainer, objectCount=OBJECT_DENSITY){
+				
+				//create objects
+				
+				//points
+				canvasContainer.addOfType(CanvasPointObject, objectCount*4)
+				
+				//points
+				//canvasContainer.addOfType(ColorSpark, objectCount)
+				
+				//stones
+				canvasContainer.addOfType(ExplosiveStone, objectCount)
+				
+				//trees
+				canvasContainer.addOfType(ExplosiveTree, objectCount)
+				
+				//init keys for hit detection
+				canvasContainer.updateKeys()
+				
+				setInterval(function(){
+					var objs = canvasContainer.objects;
+					canvasContainer.clearCanvas();
+					
+					var canvas = canvasContainer.canvas;
+					var hdCanvas = canvasContainer.detectorCanvas;
+					
+					var drawObjs = [];
+					//movement
+					for (var i=0;i<objs.length;i++){
+						var obj = objs[i];
+						canvasContainer.applyMovement(obj);
+						obj.update();
+						
+						//in canvas area?
+						//remove objects not visible on the canvas (simple optimization)
+						const overlap = DRAWING_BUFFER;
+						if (obj.inRect(0,0,canvas.width,canvas.height,overlap)){
+							drawObjs.push(obj)
+						}
+					}
+					
+					//animation
+					drawObjs.sort(compare); //sorting object to draw ones back first NOTE: this could be optimized for many objects 100+
+					canvasContainer.setObjectsOnScreen = drawObjs;
+					for (var i=0;i<drawObjs.length;i++){
+						var classType = drawObjs[i].constructor
+						switch (classType)
+						{
+							case ExplosiveStone:
+							case ExplosiveTree:
+								drawObjs[i].draw(canvas);
+								drawObjs[i].drawWithIdColor(hdCanvas);
+								break;
+							
+							default:
+								drawObjs[i].draw(canvas);
+								break;
+						}
+						/*
+						if (typeof drawObjs[i].constructor === ExplosiveStone){
+								drawObjs[i].drawWithIdColor(canvas);
+								console.log("here");
+							} else{
+								drawObjs[i].draw(canvas);
+							}
+						drawObjs[i].draw(hdCanvas);
+						*/
+					}
+					
+					for (var i=0;i<canvasContainer.fgObjects.length;i++){
+						var obj = canvasContainer.fgObjects[i];
+						obj.update();
+						obj.draw(canvas);
+						if (obj.timeOut <= 0){
+							canvasContainer.fgObjects.splice(i, 1);
+						}
+					}
+				}, 10);
+			}
+
+			function clearCanvas(canvas){
+				var ctx = canvas.getContext("2d");
+				var oldBgColor = canvas.backgroundColor
+				ctx.clearRect(0,0,canvas.width,canvas.height);
+				ctx.fillStyle = oldBgColor
+				ctx.fillRect(0,0, canvas.width, canvas.height);
+				
+			}
+
+			function createSparkSet(canvas, location, baseColor, pointCount=60){
+				scaling = (0.6+(location[1])/canvas.height)
+				points = []
+				for (var i=0;i<pointCount;i++){
+					var xSpeed = (Math.random()-0.5)*0.2 //random number between -0.1 ... +0.1
+					var ySpeed = Math.random()*-1 //random number between between -1 ... 0
+					
+					var rnd = (Math.random()-0.5)*0.4 //... between -0.2 ... +0.2
+					var rndColor= RGB_Linear_Shade(rnd, baseColor)
+					
+					var point = new ExplosionParticle(location,[xSpeed*scaling, ySpeed*scaling],rndColor)
+					points.push(point)
+				}
+				return points
+			}
+			
+			function getColorAtLocation(canvas,location){
+				var ctx = canvas.getContext("2d");
+				var imgd = ctx.getImageData(location[0], location[1], 1, 1).data;
+				//imgd[4]
+				return "rgb("+imgd[0]+","+imgd[1]+","+imgd[2]+")";
+			}
+			
+			function getLocationCanvasRelated(canvas, buffer, offCanvas=true){
+				var location=[
+					Math.random()*canvas.width*buffer,
+					Math.random()*canvas.height*buffer,
+				];
+				
+				var flipX = Math.random()< 0.5?1:-1;
+				var flipY = Math.random()< 0.5?1:-1;
+				var location = [location[0]*flipX, location[1]*flipY];
+				
+				if ((offCanvas) && inBoundingbox(location,0,0,canvas.width, canvas.height, buffer)){
+					// change x or y coordinate so that object wont appear on the screen
+					//move outside of the screen at random direction
+					var angle = Math.random()*2*Math.PI
+					location[0] += Math.cos(angle)*2*canvas.width;
+					location[1] += Math.sin(angle)*2*canvas.heigh;
+				}
+				
+				return location
+			}
+			
+			function getLocationFromShipDirection(direction){
+			//get directions and move position to opposite direction half way the screen
+				var xComponent = Math.cos(direction); 
+				var yComponent = Math.sin(direction);
+				
+				var location = [
+					xComponent = (CANVAS_SIZE[0]/2-(CANVAS_SIZE[0]*xComponent*1.5)), //1.5 ensures the starting point is never inside canvas
+					yComponent = (CANVAS_SIZE[1]/2-(CANVAS_SIZE[1]*yComponent*1.5))
+				];
+				return location;
+			}
+		
+			function controlMovementWithKeyCode(keyCode){
+				var vector = [0,0]
+				var maxAcceleration = 0.1
+				var maxSteering = 0.15
+				var maxBrakingForce = 0.2;
+				switch(String.fromCharCode(keyCode))
+				{
+					case 'W':
+						vector = normalizeVector(SHIP_SPEED, maxAcceleration);
+						if (getMagnitude(vector) < maxAcceleration/50){ // if stationary, start moving (towards right)
+							vector = [0.1,0];
+						}
+						break;
+					case 'A':
+						vector = perpVector(SHIP_SPEED,false);
+						vector = normalizeVector(vector,maxSteering);
+						break;
+					case 'D':
+						vector = perpVector(SHIP_SPEED,true);
+						vector = normalizeVector(vector,maxSteering);
+						break;
+					
+					case 'S':
+						vector = scaleVector(SHIP_SPEED, 0.2);
+						vector = normalizeVector(SHIP_SPEED, -Math.min(maxBrakingForce, getMagnitude(SHIP_SPEED)));
+						break;
+				}
+				SHIP_SPEED = addVectors(SHIP_SPEED, vector)
+				
+				//limit ship velocity
+				if (getMagnitude(SHIP_SPEED)>SHIP_MAX_VELOCITY){
+					SHIP_SPEED = normalizeVector(SHIP_SPEED, SHIP_MAX_VELOCITY);
+				}
+				//console.log(SHIP_SPEED);
+			}
+			
+			function controlMovementWithKeys(e){
+				//console.log(e.keyCode)
+				SHIP.controlMovementWithKeyCode(e.keyCode);
+			}
+			
+			function mapValueToKeyCode(value){
+				//self-made value-keyCode mapping for variable values to correspond certain key presses 
+				//return keyCode to correspond movement control in controlMovementWithKeys
+				//keyCodes for different keys: https://css-tricks.com/snippets/javascript/javascript-keycodes/
+				var mappedVariable = 27; //default esc
+				switch(value)
+				{
+					case 'accelerate':
+						mappedVariable = 87; //'W'
+						break;
+					case 'deccelerate':
+						mappedVariable = 83; //'S' 
+						break;
+					case 'steerLeft':
+						mappedVariable = 65; //'A'
+						break;
+					case 'steerRight':
+						mappedVariable = 68; //'D'
+						break;
+					default:
+						console.log("No mapping defined for given value (in function mapValueToKeyCode)");
+						break;
+				}
+				return mappedVariable;
+			}
+			
+			function controlMovementWithVariable(someVariable){
+				var keyCode = mapValueToKeyCode(someVariable);
+				controlMovementWithKeyCode(keyCode);				
+			}
+			
+			
+			//// FUNCTIONS FOR DRAWING
+			//adopted from lecture demo, used as placeholder for general CanvasObjects
+			function drawRegularPolygon(canvas, location, radius=3, sides=4, rotation=0){
+				var ctx = canvas.getContext("2d");
+				ctx.beginPath();
+				var x=location[0]+Math.cos(0+rotation)*radius;
+				var y=location[1]+Math.sin(0+rotation)*radius;
+				ctx.moveTo(x, y);
+				sides/=2;
+				for(var i=Math.PI/sides;i<=Math.PI*2;i+=Math.PI/sides){
+					var x=location[0]+Math.cos(i+rotation)*radius;
+					var y=location[1]+Math.sin(i+rotation)*radius;
+					ctx.lineTo(x, y);
+				}
+				var x=location[0]+Math.cos(0+rotation)*radius;
+				var y=location[1]+Math.sin(0+rotation)*radius;
+				ctx.lineTo(x, y);
+				
+				ctx.stroke();
+			}
+			
+			function drawPoint(canvas, location, color){
+				var ctx = canvas.getContext("2d");
+				ctx.fillStyle=color;
+				ctx.fillRect(location[0], location[1], 2, 2);
+				ctx.fillStyle = BACKGROUND;
+			}
+			
+			function drawStone(canvas, location, color=null){
+				scaling = (0.6+(location[1])/canvas.height)
+				var ctx = canvas.getContext("2d"); 
+				var oldFillStyle = ctx.fillStyle;
+				var oldStrokeStyle = ctx.strokeStyle;
+				var oldLineWidth = ctx.lineWidth;
+				ctx.beginPath();
+				ctx.arc(location[0], location[1]+2, 6*scaling, Math.PI,Math.PI*2)
+				if (!color){
+					ctx.fillStyle="grey";
+				} else{
+					ctx.fillStyle = color;
+					ctx.strokeStyle = color;
+					ctx.lineWidth = AIM_HELP_LEVEL;
+				}
+				ctx.fill();
+				ctx.stroke();
+				ctx.fillStyle = oldFillStyle;
+				ctx.strokeStyle = oldStrokeStyle;
+				ctx.lineWidth = oldLineWidth;
+				
+			}
+			
+			function drawTree(canvas, location, type="spruce",beingCut=0, cuttingProgress=0, fading=0, color=null){
+				scaling = (0.6+(location[1])/canvas.height)
+				switch(TREES[type]) {
+					case "spruce":
+					default:
+						if (beingCut){
+							drawSpruceBeingCut(canvas, location,scaling, cuttingProgress, fading, color);
+						} else {
+							drawSpruce(canvas, location, scaling, color);
+						}
+				}
+			}
+			
+			function drawSpruceBeingCut(canvas, location, scaling, cuttingProgress=1, fading=0, color=null){
+				var ctx = canvas.getContext("2d");
+				var oldFillStyle = ctx.fillStyle;
+				var oldStrokeStyle = ctx.strokeStyle;
+				var oldLineWidth = ctx.lineWidth;
+				ctx.translate(location[0],location[1])
+				var origo = [0,0]
+				//bottom stump
+				ctx = pathCenteredRectangle(ctx, addVectors(origo,[0,2]),[8,2],scaling)
+				if (color){
+					ctx.fillStyle = color;
+					ctx.strokeStyle = color;
+					ctx.lineWidth = AIM_HELP_LEVEL;
+				} else{
+					ctx.fillStyle="maroon";
+				}
+				
+				ctx.fill();
+				ctx.stroke();
+				
+				if (fading<1){
+					ctx.globalAlpha = 1-fading //fade effect for cut trees
+					ctx.rotate(-cuttingProgress*Math.PI/2)
+	
+					//upper stump
+					ctx = pathCenteredRectangle(ctx, addVectors(origo,[0,-2]),[8,2],scaling)
+					if(!color){
+						ctx.fillStyle="maroon";
+					}
+					ctx.fill();
+					ctx.stroke();
+				
+					//leaves
+					ctx = pathSpruceLeaves(ctx, origo, scaling)
+					if (!color){
+						var gradient = ctx.createLinearGradient(origo[0], origo[1], origo[0]+40, origo[1]);
+						gradient.addColorStop("0", "green");
+						gradient.addColorStop("0.99", "black");
+						ctx.fillStyle=gradient;
+					}
+					ctx.fill();
+					ctx.stroke();
+	
+					ctx.rotate(cuttingProgress*Math.PI/2)
+					ctx.globalAlpha = 1 //remove fading
+				}
+				
+				ctx.translate(-location[0],-location[1])
+				ctx.fillStyle = oldFillStyle;
+				ctx.strokeStyle = oldStrokeStyle;
+				ctx.lineWidth = oldLineWidth;				
+				
+			}
+			
+			function drawSpruce(canvas, location, scaling=1, color=null){
+				var ctx = canvas.getContext("2d");
+				var oldFillStyle = ctx.fillStyle;
+				var oldStrokeStyle = ctx.strokeStyle;
+				var oldLineWidth = ctx.lineWidth;
+				
+				//stump
+				ctx = pathCenteredRectangle(ctx, location,[8,4],scaling)
+				if (!color){
+					ctx.fillStyle="maroon";
+				} else{
+					ctx.fillStyle = color;
+					ctx.strokeStyle = color;
+					ctx.lineWidth = AIM_HELP_LEVEL;
+				}
+				ctx.fill();
+				ctx.stroke();
+				
+				//leaves
+				ctx = pathSpruceLeaves(ctx, location, scaling)
+				if (!color){
+					var gradient = ctx.createLinearGradient(location[0], location[1], location[0]+40, location[1]);
+					gradient.addColorStop("0", "green");
+					gradient.addColorStop("0.99", "black");
+					ctx.fillStyle=gradient;
+				}
+				ctx.fill();
+				ctx.stroke();
+				ctx.fillStyle = BACKGROUND;
+				ctx.fillStyle = oldFillStyle;
+				ctx.strokeStyle = oldStrokeStyle;
+				ctx.lineWidth = oldLineWidth;
+				
+			}
+			
+			function pathLine(canvas, start, end, thickness=5){
+				var ctx = canvas.getContext("2d");
+				ctx.beginPath();
+				ctx.moveTo(...start);
+				ctx.lineTo(...end);
+				ctx.lineWidth = thickness;
+				return ctx;
+			}
+					
+			function pathRegularPolygon(canvas, location, radius=40, sides=40, rotation=0){
+				var ctx = canvas.getContext("2d");
+				ctx.beginPath();
+				var x=location[0]+Math.cos(0+rotation)*radius;
+				var y=location[1]+Math.sin(0+rotation)*radius;
+				ctx.moveTo(x, y);
+				sides/=2;
+				for(var i=Math.PI/sides;i<=Math.PI*2;i+=Math.PI/sides){
+					var x=location[0]+Math.cos(i+rotation)*radius;
+					var y=location[1]+Math.sin(i+rotation)*radius;
+					ctx.lineTo(x, y);
+				}
+				var x=location[0]+Math.cos(0+rotation)*radius;
+				var y=location[1]+Math.sin(0+rotation)*radius;
+				ctx.lineTo(x, y);
+				
+				return ctx;
+			}
+			
+			function pathCenteredRectangle(ctx, center, offsets, scaling){
+				ctx.beginPath();
+				ctx.moveTo(-offsets[0]*scaling+center[0], -offsets[1]*scaling+center[1]);
+				ctx.lineTo(offsets[0]*scaling+center[0], -offsets[1]*scaling+center[1]);
+				ctx.lineTo(offsets[0]*scaling+center[0], offsets[1]*scaling+center[1]);
+				ctx.lineTo(-offsets[0]*scaling+center[0], offsets[1]*scaling+center[1]);
+				ctx.lineTo(-offsets[0]*scaling+center[0], -offsets[1]*scaling+center[1]);
+				return ctx
+			}
+			
+			function pathSpruceLeaves(ctx, location, scaling){
+				ctx.beginPath();
+				ctx.moveTo(-20*scaling+location[0], -2*scaling+location[1]);
+				ctx.lineTo(20*scaling+location[0], -2*scaling+location[1]);
+				ctx.lineTo(12*scaling+location[0], -10*scaling+location[1]);
+				ctx.lineTo(20*scaling+location[0], -10*scaling+location[1]);
+				ctx.lineTo(12*scaling+location[0], -18*scaling+location[1]);
+				ctx.lineTo(20*scaling+location[0], -18*scaling+location[1]);
+				ctx.lineTo(0*scaling+location[0], -30*scaling+location[1]);
+				ctx.lineTo(-20*scaling+location[0], -18*scaling+location[1]);
+				ctx.lineTo(-12*scaling+location[0], -18*scaling+location[1]);
+				ctx.lineTo(-20*scaling+location[0], -10*scaling+location[1]);
+				ctx.lineTo(-12*scaling+location[0], -10*scaling+location[1]);
+				ctx.lineTo(-20*scaling+location[0], -2*scaling+location[1]);
+				return ctx
+				
+			}
+			
+			//////////////////////////////////// "UTILS"	
+			
+			function inBoundingbox(location, x0, y0, x1, y1, buffer=0){
+				var inbounds = false;
+				if ((location[0] >= (x0-buffer))
+						&& (location[1] >= (y0-buffer))
+						&& (location[0] <= (x1+buffer))
+						&& (location[1] <= (y1+buffer))){
+					inbounds = true;
+				}
+				return inbounds;
+			}
+			
+			// expects only positive (absolute) values, use isNegative flag for negative return value
+			//returns value between upper and lower bound (bounds included)
+			//currently not used
+			function limitAbsoluteValue(value, upper, lower=0, isNegative=false){
+				var limitedValue = value;
+				maxF = Math.max
+				minF = Math.min
+				if (isNegative){
+					limitedValue = -minF(maxF(value,lower),upper);
+				} else{
+					limitedValue = minF(maxF(value,lower),upper);
+				}
+				return limitedValue
+				
+			}
+			
+			function getOfType(objects, type){
+				var pivotObjs = []
+				for(var i=0;i<objects.length;i++){
+					if(objects[i] instanceof type){
+						pivotObjs.push(objects[i])
+					}
+				}
+				//console.log(pivotObjs.length)
+				
+				return pivotObjs
+			}
+			
+			function getNearest(location, objects, minDistance=Infinity){
+				var index=-1;
+				for(var i=0;i<objects.length;i++){
+					var dist=distance(location,objects[i].location);
+					
+					if(dist<minDistance){
+						minDistance=dist;
+						index=i;
+					}
+				}
+				return index;
+			}
+			
+			// idea for following function adopted from https://stackoverflow.com/questions/1129216/sort-array-of-objects-by-string-property-value
+			function compare(canvasObject1, canvasObject2){
+				if (canvasObject1.location[1] < canvasObject2.location[1]){
+					return -1;
+				}
+				if (canvasObject1.location[1] > canvasObject2.location[1]){
+					return 1;
+				}
+				return 0;
+			}
+				
+			// following function adopted from https://stackoverflow.com/questions/4550505/getting-a-random-value-from-a-javascript-array
+			function getRandomElement(array){
+				var el = array[Math.floor(Math.random() * array.length)];
+				return el
+			}
+
+			//following function idea from https://stackoverflow.com/questions/1215392/how-to-quickly-and-conveniently-disable-all-console-log-statements-in-my-code
+			function toggleLogging(){
+				if (CURRENT_LOGGER == DEFAULT_LOGGER){
+						console.log("LOGGER DISABLED -- call toggleLogging() to re-enable it");
+						console.log = DISABLED_LOGGER;
+						CURRENT_LOGGER = DISABLED_LOGGER;
+					} else {
+						console.log = DEFAULT_LOGGER;
+						CURRENT_LOGGER = DEFAULT_LOGGER;
+						console.log("LOGGER ENABLED -- call toggleLogging() to disable it");
+						
+					}
+				
+			}
+
+			//following used to shade fire sparks, from  https://stackoverflow.com/questions/5560248/programmatically-lighten-or-darken-a-hex-color-or-rgb-and-blend-colors
+			//p -- "percentage", c-- base color
+			const RGB_Linear_Shade=(p,c)=>{
+				var i=parseInt,r=Math.round,[a,b,c,d]=c.split(","),P=p<0,t=P?0:255*p,P=P?1+p:1-p;
+				return"rgb"+(d?"a(":"(")+r(i(a[3]=="a"?a.slice(5):a.slice(4))*P+t)+","+r(i(b)*P+t)+","+r(i(c)*P+t)+(d?","+d:")");
+			}
+			
+			function resetOffCanvas(obj, canvas, buffer){
+				obj.location[0] = Math.random()*canvas.width*(buffer-1) + canvas.width*1.1,
+				obj.location[1] = Math.random()*canvas.height*0.9+canvas.height*0.1
+			}
+			
+			function normalizeVector(vector,toLenght=1){
+				var magn = getMagnitude(vector);
+				if (magn == 0){
+					return [0,0];
+				} else{
+					var newV = [vector[0]/magn, vector[1]/magn];
+					return scaleVector(newV,toLenght);
+				}
+			}
+			
+			//returns vector perpendicular to given one
+			function perpVector(v1,clockwise=true){
+				if (clockwise){
+					var newV=[
+						-v1[1],
+						v1[0]
+					];
+				} else{
+					var newV=[
+						v1[1],
+						-v1[0]
+					];
+
+				}
+				
+				return newV;
+			}
+			
+			//returns vector angle from x-axis (generally used for rotation)
+			function angleVector(v1){
+				var angle = v1[0]/Math.sqrt(v1[0]*v1[0]+v1[1]*v1[1])
+				return angle;
+			}
+			
+			function averageVector(v1,v2){
+				var avgV = scaleVector(addVectors(v1,v2), 0.5)
+				return avgV
+			}	
+			
+			function scaleVector(v1, scalar=1){
+				var sclV =[
+					v1[0]*scalar,
+					v1[1]*scalar
+				];
+				return sclV;
+			}
+
+			//following functions stolen from course lecture demo
+			function addVectors(v1,v2){
+				var newV=[
+					v1[0]+v2[0],
+					v1[1]+v2[1]
+				];
+				return newV;
+			}
+			function subtractVectors(v1,v2){
+				var newV=[
+					v1[0]-v2[0],
+					v1[1]-v2[1]
+				];
+				return newV;
+			}
+			function getMagnitude(vector){
+				return Math.sqrt(vector[0]*vector[0]+vector[1]*vector[1]);
+			}
+			function distance(v1,v2){
+				return getMagnitude(subtractVectors(v1,v2))
+			}
+			function getCursorPosition(event){
+				//console.log(event);
+				var canvas=event.target;
+				var rect = canvas.getBoundingClientRect();
+				var x=event.clientX - rect.left;
+				var y=event.clientY - rect.top;
+				return [x,y];
+			}
+
+			
+		</script>
+	</head>
+	<body onload="main()">
+		<h1> Landscape Clearing </h1>
+		<h4> For safety, foliage needs to be carried away before using explosives on stump</h4>
+		<h4> USE WASD-keys or Click items on the right side to move around</h4>
+		<canvas id="scenery"></canvas>
+		<canvas id="sceneryHitDetection" hidden=""></canvas>
+		<canvas id="controller"></canvas>
+		<canvas id="controllerHitDetection" hidden="" ></canvas>
+		<canvas id="camera"></canvas>
+		<canvas id="cameraController"></canvas>
+		
+	
+	</body>
+</html>
