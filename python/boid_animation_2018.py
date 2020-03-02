@@ -18,7 +18,7 @@ python file
 simple animation
 
 The script:
-The script can be run in the command prompt by command "py -3.5 la_boids_final_kmt.py". (Requires Python 3.5 and packages mentioned above.)
+The script can be run in the command prompt by command "py -3.5 boid_animation_2018.py". (Requires Python 3.5 and packages mentioned above.)
 There is no way to pass command line arguments but the modifications must be done in the code to change boid count, spawning area, altering the rule weights and so on.
 (There initial goal was to make a  better GUI for it but unexpected problems with tkinter took lot of time. 
 The GUI implementation is not included since it's not providing much additional functionality at this point.)
@@ -46,7 +46,6 @@ At this point, the collision avoidance has the highest impact to the behaviour.
 Other:
 The code was initially adopted on the internet, but I realized there was many things to improve (which I did do). 
 However, the references are still included in the code and it is well (excessively) commented.
-I will be working on the GUI implementation and try to finish it so that the arguments can be easily modified in the GUI.
 
 '''
 
